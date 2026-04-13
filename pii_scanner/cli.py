@@ -390,6 +390,253 @@ def test_connection(ctx):
         sys.exit(1)
 
 
+@cli.group()
+@click.pass_context
+def jira(ctx):
+    """Jira integration — scan issues and comments for PII."""
+    config: Config = ctx.obj["config"]
+
+    # Validate Jira config is present
+    if not config.jira_api_token:
+        click.echo("✗ JIRA_API_TOKEN not set in .env", err=True)
+        sys.exit(1)
+
+    if not config.jira_url or not config.jira_email:
+        click.echo(
+            "✗ Jira configuration missing. Set JIRA_URL, JIRA_EMAIL, and JIRA_API_TOKEN in .env",
+            err=True,
+        )
+        sys.exit(1)
+
+
+@jira.command("test")
+@click.pass_context
+def jira_test(ctx):
+    """Test Jira connectivity, permissions, and issue access."""
+    config: Config = ctx.obj["config"]
+
+    from .integrations.jira.client import JiraClient
+
+    client = JiraClient(
+        jira_url=config.jira_url,
+        email=config.jira_email,
+        api_token=config.jira_api_token,
+    )
+
+    click.echo(f"\nTesting connection to {config.jira_url}...\n")
+
+    # Step 1 — Auth check
+    try:
+        me = client.get_myself()
+        click.echo(f"  Auth          ✓  logged in as {me.get('displayName')} ({me.get('emailAddress')})")
+    except Exception as e:
+        click.echo(f"  Auth          ✗  {e}", err=True)
+        sys.exit(1)
+
+    # Step 2 — List accessible projects
+    try:
+        projects = client.get_projects()
+        keys = [p["key"] for p in projects]
+        click.echo(f"  Projects      ✓  {len(keys)} accessible: {', '.join(keys) if keys else 'none'}")
+    except Exception as e:
+        click.echo(f"  Projects      ✗  {e}", err=True)
+
+    # Step 3 — Check configured project keys exist
+    configured_keys = config.get_jira_project_keys()
+    if configured_keys:
+        accessible_keys = {p["key"] for p in projects}
+        for key in configured_keys:
+            if key in accessible_keys:
+                click.echo(f"  Project {key:<8} ✓  accessible")
+            else:
+                click.echo(f"  Project {key:<8} ✗  not found or no access")
+
+    # Step 4 — Try fetching issues without any time filter
+    try:
+        jql = f"project IN ({', '.join(configured_keys)}) ORDER BY created DESC" \
+            if configured_keys else "ORDER BY created DESC"
+        issues = client.search_issues(jql)
+        if issues:
+            click.echo(f"\n  Recent issues (no time filter):")
+            for issue in issues[:5]:
+                fields = issue.get("fields", {})
+                click.echo(f"    {issue['key']}  {fields.get('summary', '')[:60]}")
+        else:
+            click.echo(f"\n  No issues found even without a time filter.")
+            click.echo(f"  → The project may be empty or the API token lacks Browse permissions.")
+    except Exception as e:
+        click.echo(f"  Issue search  ✗  {e}", err=True)
+
+    click.echo()
+
+
+@jira.command("scan")
+@click.option("--hours", type=int, default=24, help="Lookback window in hours (default 24)")
+@click.option("--output", default=None, help="Output file path. Supports .json and .csv extensions. Auto-generated if not specified.")
+@click.option("--format", "fmt", default="json", type=click.Choice(["json", "csv"]), help="Output format when auto-generating filename (default: json)")
+@click.pass_context
+def jira_scan(ctx, hours: int, output: Optional[str], fmt: str):
+    """Fetch Jira activity from the last N hours and scan for PII."""
+    config: Config = ctx.obj["config"]
+
+    from .integrations.jira.reporter import generate_filename
+    from datetime import datetime, timezone, timedelta
+
+    # Auto-generate output filename if not provided
+    output_path = output or generate_filename(fmt)
+
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    since_str = since.strftime("%Y-%m-%d %H:%M UTC")
+
+    click.echo("=" * 60)
+    click.echo("JIRA PII SCAN")
+    click.echo("=" * 60)
+    click.echo(f"Jira URL:         {config.jira_url}")
+    click.echo(f"Projects:         {', '.join(config.get_jira_project_keys()) or 'ALL'}")
+    click.echo(f"Lookback:         last {hours} hours (since {since_str})")
+    click.echo(f"Detectors:        regex={config.enable_regex_detection}, "
+               f"ner={config.enable_ner_detection}, llm={config.enable_llm_detection}")
+    click.echo(f"Ignoring domains: {', '.join(config.get_company_email_domains()) or 'none configured'}")
+    click.echo(f"Output file:      {output_path}")
+    click.echo("=" * 60)
+    click.echo()
+
+    try:
+        from .integrations.jira.client import JiraClient
+        from .integrations.jira.fetcher import JiraFetcher
+        from .integrations.jira.filters import ExceptionFilter
+        from .integrations.jira.scanner import JiraScanner
+        from .integrations.jira.reporter import save_report
+
+        detector = _build_detector(config)
+
+        client = JiraClient(
+            jira_url=config.jira_url,
+            email=config.jira_email,
+            api_token=config.jira_api_token,
+        )
+        fetcher = JiraFetcher(client, project_keys=config.get_jira_project_keys())
+        exception_filter = ExceptionFilter(company_domains=config.get_company_email_domains())
+        scanner = JiraScanner(detector, exception_filter, fetcher)
+
+        click.echo("Scanning...")
+        results = scanner.run_full_scan(hours=hours)
+
+        # Print to terminal
+        _print_jira_report(results)
+
+        # Save to file
+        save_report(results, output_path)
+        click.echo(f"\n✓ Report saved to: {output_path}")
+
+    except Exception as e:
+        logger.error("jira_scan_failed", error=str(e))
+        click.echo(f"\n✗ Jira scan failed: {e}", err=True)
+        sys.exit(1)
+
+
+@jira.command("webhook")
+@click.option("--port", type=int, default=None, help="Port to listen on (default from .env or 8080)")
+@click.pass_context
+def jira_webhook(ctx, port: Optional[int]):
+    """Start a webhook server to scan Jira events in real time."""
+    config: Config = ctx.obj["config"]
+    port = port or config.jira_webhook_port
+
+    click.echo("=" * 60)
+    click.echo("JIRA WEBHOOK SERVER")
+    click.echo("=" * 60)
+    click.echo(f"Listening on:  http://0.0.0.0:{port}/webhook")
+    click.echo(f"Health check:  http://0.0.0.0:{port}/health")
+    click.echo(f"Signature:     {'enabled' if config.jira_webhook_secret else 'disabled (no secret set)'}")
+    click.echo("=" * 60)
+    click.echo()
+
+    try:
+        from .integrations.jira.client import JiraClient
+        from .integrations.jira.fetcher import JiraFetcher
+        from .integrations.jira.filters import ExceptionFilter
+        from .integrations.jira.scanner import JiraScanner
+        from .integrations.jira.webhook import run_webhook_server
+
+        detector = _build_detector(config)
+        client = JiraClient(
+            jira_url=config.jira_url,
+            email=config.jira_email,
+            api_token=config.jira_api_token,
+        )
+        fetcher = JiraFetcher(client, project_keys=config.get_jira_project_keys())
+        exception_filter = ExceptionFilter(company_domains=config.get_company_email_domains())
+        scanner = JiraScanner(detector, exception_filter, fetcher)
+
+        run_webhook_server(
+            scanner=scanner,
+            port=port,
+            secret=config.jira_webhook_secret,
+        )
+
+    except Exception as e:
+        logger.error("jira_webhook_failed", error=str(e))
+        click.echo(f"\n✗ Webhook server failed: {e}", err=True)
+        sys.exit(1)
+
+
+def _build_detector(config: Config):
+    """Build the CompositeDetector from config. Shared by DB and Jira scanners."""
+    from .detectors.base import CompositeDetector
+    from .detectors.regex import RegexDetector
+    from .detectors.ner import PresidioDetector, SpacyNERDetector
+
+    detectors = []
+
+    if config.enable_regex_detection:
+        detectors.append(RegexDetector())
+
+    if config.enable_ner_detection:
+        try:
+            detectors.append(PresidioDetector(min_confidence=config.confidence_threshold))
+        except Exception:
+            try:
+                detectors.append(SpacyNERDetector(min_confidence=config.confidence_threshold))
+            except Exception:
+                pass
+
+    return CompositeDetector(detectors)
+
+
+def _print_jira_report(results):
+    """Print a formatted Jira scan report to the terminal."""
+    total_findings = sum(len(r.findings) for r in results)
+    total_filtered = sum(r.filtered_count for r in results)
+    items_with_pii = [r for r in results if r.has_pii]
+
+    click.echo(f"\n{'=' * 60}")
+    click.echo("RESULTS")
+    click.echo(f"{'=' * 60}")
+    click.echo(f"Items scanned:  {len(results)}")
+    click.echo(f"Items with PII: {len(items_with_pii)}")
+    click.echo(f"Total findings: {total_findings}")
+    click.echo(f"Filtered out:   {total_filtered} (@mentions / company emails)")
+
+    if not items_with_pii:
+        click.echo("\n✓ No PII found.")
+        return
+
+    click.echo(f"\n{'─' * 60}")
+
+    for result in items_with_pii:
+        click.echo(f"\n[{result.issue_key}] {result.source_type}")
+        click.echo(f"  {'PII Type':<20} {'Confidence':<12} {'Detector':<12} {'Redacted'}")
+        click.echo(f"  {'─' * 70}")
+        for finding in result.findings:
+            click.echo(
+                f"  {finding.pii_type:<20} "
+                f"{finding.confidence:<12.2f} "
+                f"{finding.detector_name:<12} "
+                f"{finding.redacted_text}"
+            )
+
+
 def main():
     """Entry point for CLI."""
     cli(obj={})

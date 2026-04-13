@@ -95,6 +95,36 @@ class Config(BaseSettings):
         description="Log format (json or console)",
     )
 
+    # Jira integration
+    jira_url: Optional[str] = Field(
+        default=None,
+        description="Jira base URL e.g. https://yourcompany.atlassian.net",
+    )
+    jira_email: Optional[str] = Field(
+        default=None,
+        description="Jira account email — only needed for classic (non-scoped) tokens",
+    )
+    jira_api_token: Optional[str] = Field(
+        default=None,
+        description="Jira API token (generate at id.atlassian.com)",
+    )
+    jira_project_keys: Optional[str] = Field(
+        default=None,
+        description="Comma-separated Jira project keys to scan. Leave empty to scan all.",
+    )
+    jira_webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Secret for verifying Jira webhook signatures",
+    )
+    jira_webhook_port: int = Field(
+        default=8080,
+        description="Port for the Jira webhook server",
+    )
+    company_email_domains: Optional[str] = Field(
+        default=None,
+        description="Comma-separated company email domains to exclude from PII findings",
+    )
+
     # Runtime metadata
     triggered_by: str = Field(
         default="manual",
@@ -134,6 +164,18 @@ class Config(BaseSettings):
     def get_schemas_to_exclude(self) -> List[str]:
         """Parse schemas_to_exclude into a list."""
         return [s.strip() for s in self.schemas_to_exclude.split(",") if s.strip()]
+
+    def get_jira_project_keys(self) -> List[str]:
+        """Parse jira_project_keys into a list. Returns empty list if not set."""
+        if not self.jira_project_keys:
+            return []
+        return [k.strip() for k in self.jira_project_keys.split(",") if k.strip()]
+
+    def get_company_email_domains(self) -> List[str]:
+        """Parse company_email_domains into a list. Returns empty list if not set."""
+        if not self.company_email_domains:
+            return []
+        return [d.strip() for d in self.company_email_domains.split(",") if d.strip()]
 
     def to_dict(self) -> dict:
         """Convert config to dictionary for storage."""
