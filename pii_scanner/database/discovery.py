@@ -400,17 +400,22 @@ class ColumnDiscovery:
         Returns:
             Dictionary with stats: total_rows, null_count, distinct_count
         """
-        sql = f"""
-            SELECT
-                COUNT(*) as total_rows,
-                COUNT(*) FILTER (WHERE {candidate.column_name} IS NULL) as null_count,
-                COUNT(DISTINCT {candidate.column_name}) as distinct_count
-            FROM {candidate.schema_name}.{candidate.table_name}
-        """
+        from psycopg2 import sql as pgsql
+        col = pgsql.Identifier(candidate.column_name)
+        query = pgsql.SQL(
+            "SELECT COUNT(*) as total_rows, "
+            "COUNT(*) FILTER (WHERE {col} IS NULL) as null_count, "
+            "COUNT(DISTINCT {col}) as distinct_count "
+            "FROM {schema}.{table}"
+        ).format(
+            col=col,
+            schema=pgsql.Identifier(candidate.schema_name),
+            table=pgsql.Identifier(candidate.table_name),
+        )
 
         try:
             with self.db.get_cursor() as cur:
-                cur.execute(sql)
+                cur.execute(query)
                 row = cur.fetchone()
                 return {
                     "total_rows": row[0],

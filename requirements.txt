@@ -17,6 +17,10 @@ pydantic-settings>=2.1.0
 structlog>=24.1.0
 colorama>=0.4.6
 
+# Security: pin minimum safe version (transitive dep from presidio-analyzer)
+# cryptography<49.0.0 has CVEs PYSEC-2026-3552/3553/3554; >=50.0.0 fixes all three
+cryptography>=50.0.0
+
 # Optional: LLM support (self-hosted only)
 # openai>=1.0.0  # For private endpoints only
 # anthropic>=0.7.0  # For private endpoints only

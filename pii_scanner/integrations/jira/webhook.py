@@ -40,6 +40,13 @@ def create_webhook_app(scanner, webhook_secret: Optional[str] = None):
             "Install with: pip install fastapi uvicorn"
         )
 
+    if webhook_secret is None:
+        raise ValueError(
+            "JIRA_WEBHOOK_SECRET must be set before starting the webhook server. "
+            "Running without a secret allows any caller to send arbitrary events. "
+            "Set JIRA_WEBHOOK_SECRET in your .env file."
+        )
+
     app = FastAPI(title="PIIHunter Jira Webhook", version="1.0.0")
 
     @app.get("/health")
@@ -184,5 +191,13 @@ def run_webhook_server(scanner, host: str = "0.0.0.0", port: int = 8080, secret:
 
     app = create_webhook_app(scanner, webhook_secret=secret)
 
+    if host == "0.0.0.0":
+        logger.warning(
+            "webhook_binding_all_interfaces",
+            message=(
+                "Server is binding to 0.0.0.0 (all interfaces). "
+                "Restrict to a specific interface (e.g. 127.0.0.1) behind a reverse proxy in production."
+            ),
+        )
     logger.info("webhook_server_starting", host=host, port=port)
     uvicorn.run(app, host=host, port=port)

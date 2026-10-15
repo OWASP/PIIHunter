@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional, Iterator
 from dataclasses import dataclass
 import random
 import structlog
+from psycopg2 import sql as pgsql
 
 logger = structlog.get_logger(__name__)
 
@@ -86,13 +87,15 @@ class RandomSampler(SamplingStrategy):
             if not pk_columns:
                 pk_columns = ["ctid"]  # Fallback to PostgreSQL row identifier
 
-        # Build PK selector
-        pk_select = ", ".join(pk_columns)
+        pk_identifiers = pgsql.SQL(", ").join(pgsql.Identifier(pk) for pk in pk_columns)
+        col_identifier = pgsql.Identifier(column_name)
+        schema_identifier = pgsql.Identifier(schema_name)
+        table_identifier = pgsql.Identifier(table_name)
 
         # Get total row count
-        count_sql = f"""
-            SELECT COUNT(*) FROM {schema_name}.{table_name}
-        """
+        count_sql = pgsql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+            schema_identifier, table_identifier
+        )
 
         with self.db.get_cursor() as cur:
             cur.execute(count_sql)
@@ -114,23 +117,30 @@ class RandomSampler(SamplingStrategy):
 
         # For small tables, sample all rows
         if total_rows <= sample_size:
-            sample_sql = f"""
-                SELECT {pk_select}, {column_name}
-                FROM {schema_name}.{table_name}
-                WHERE {column_name} IS NOT NULL
-            """
+            sample_sql = pgsql.SQL(
+                "SELECT {pk_cols}, {col} FROM {schema}.{table} WHERE {col} IS NOT NULL"
+            ).format(
+                pk_cols=pk_identifiers,
+                col=col_identifier,
+                schema=schema_identifier,
+                table=table_identifier,
+            )
         else:
             # Use random sampling
             # Calculate sample percentage
             sample_pct = min(100, (sample_size / total_rows) * 100 * 1.5)  # 1.5x overshoot
 
-            sample_sql = f"""
-                SELECT {pk_select}, {column_name}
-                FROM {schema_name}.{table_name}
-                TABLESAMPLE BERNOULLI ({sample_pct})
-                WHERE {column_name} IS NOT NULL
-                LIMIT {sample_size}
-            """
+            sample_sql = pgsql.SQL(
+                "SELECT {pk_cols}, {col} FROM {schema}.{table} "
+                "TABLESAMPLE BERNOULLI ({pct}) WHERE {col} IS NOT NULL LIMIT {limit}"
+            ).format(
+                pk_cols=pk_identifiers,
+                col=col_identifier,
+                schema=schema_identifier,
+                table=table_identifier,
+                pct=pgsql.Literal(sample_pct),
+                limit=pgsql.Literal(sample_size),
+            )
 
         sample_data = []
         with self.db.get_cursor() as cur:
@@ -215,12 +225,15 @@ class StratifiedSampler(SamplingStrategy):
             if not pk_columns:
                 pk_columns = ["ctid"]
 
-        pk_select = ", ".join(pk_columns)
+        pk_identifiers = pgsql.SQL(", ").join(pgsql.Identifier(pk) for pk in pk_columns)
+        col_identifier = pgsql.Identifier(column_name)
+        schema_identifier = pgsql.Identifier(schema_name)
+        table_identifier = pgsql.Identifier(table_name)
 
         # Get total row count
-        count_sql = f"""
-            SELECT COUNT(*) FROM {schema_name}.{table_name}
-        """
+        count_sql = pgsql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+            schema_identifier, table_identifier
+        )
 
         with self.db.get_cursor() as cur:
             cur.execute(count_sql)
@@ -242,14 +255,18 @@ class StratifiedSampler(SamplingStrategy):
             offset = (total_rows // num_strata) * i
             limit = samples_per_stratum
 
-            stratum_sql = f"""
-                SELECT {pk_select}, {column_name}
-                FROM {schema_name}.{table_name}
-                WHERE {column_name} IS NOT NULL
-                ORDER BY {pk_select}
-                OFFSET {offset}
-                LIMIT {limit}
-            """
+            stratum_sql = pgsql.SQL(
+                "SELECT {pk_cols}, {col} FROM {schema}.{table} "
+                "WHERE {col} IS NOT NULL ORDER BY {pk_cols} "
+                "OFFSET {offset} LIMIT {limit}"
+            ).format(
+                pk_cols=pk_identifiers,
+                col=col_identifier,
+                schema=schema_identifier,
+                table=table_identifier,
+                offset=pgsql.Literal(offset),
+                limit=pgsql.Literal(limit),
+            )
 
             with self.db.get_cursor() as cur:
                 cur.execute(stratum_sql)
@@ -341,18 +358,21 @@ class StreamingSampler(SamplingStrategy):
             if not pk_columns:
                 pk_columns = ["ctid"]
 
-        pk_select = ", ".join(pk_columns)
+        pk_identifiers = pgsql.SQL(", ").join(pgsql.Identifier(pk) for pk in pk_columns)
 
-        sql = f"""
-            SELECT {pk_select}, {column_name}
-            FROM {schema_name}.{table_name}
-            WHERE {column_name} IS NOT NULL
-        """
+        stream_sql = pgsql.SQL(
+            "SELECT {pk_cols}, {col} FROM {schema}.{table} WHERE {col} IS NOT NULL"
+        ).format(
+            pk_cols=pk_identifiers,
+            col=pgsql.Identifier(column_name),
+            schema=pgsql.Identifier(schema_name),
+            table=pgsql.Identifier(table_name),
+        )
 
         cursor_name = f"stream_{schema_name}_{table_name}_{column_name}"
 
         with self.db.get_server_cursor(name=cursor_name) as cur:
-            cur.execute(sql)
+            cur.execute(stream_sql)
 
             while True:
                 rows = cur.fetchmany(batch_size)

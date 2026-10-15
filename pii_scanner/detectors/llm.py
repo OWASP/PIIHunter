@@ -7,6 +7,7 @@ DO NOT send real production PII to public APIs.
 
 from typing import List, Optional, Dict, Any
 import json
+from urllib.parse import urlparse
 from .base import PIIDetector, DetectedEntity, PIIType
 import structlog
 
@@ -108,17 +109,26 @@ Only include entities you are confident about (>0.5 confidence). Respond with va
         Returns:
             True if URL looks like a public service
         """
-        public_domains = [
+        public_domains = {
             "api.openai.com",
             "api.anthropic.com",
             "api.cohere.ai",
             "api.together.xyz",
             "huggingface.co",
             "replicate.com",
-        ]
+        }
 
-        url_lower = url.lower()
-        return any(domain in url_lower for domain in public_domains)
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                return True  # Treat non-HTTP URLs as unsafe
+            hostname = (parsed.hostname or "").lower()
+            return hostname in public_domains or any(
+                hostname == domain or hostname.endswith("." + domain)
+                for domain in public_domains
+            )
+        except Exception:
+            return True  # Fail safe — treat unparseable URLs as public
 
     def detect(self, text: str) -> List[DetectedEntity]:
         """
@@ -195,6 +205,7 @@ Only include entities you are confident about (>0.5 confidence). Respond with va
             headers=headers,
             json=payload,
             timeout=self.timeout,
+            verify=True,
         )
 
         response.raise_for_status()

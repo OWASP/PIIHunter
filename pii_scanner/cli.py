@@ -43,7 +43,7 @@ def cli(ctx, log_level: Optional[str], log_format: Optional[str]):
         configure_logging(config.log_level, config.log_format)
 
     except Exception as e:
-        click.echo(f"Error loading configuration: {e}", err=True)
+        click.echo("Error loading configuration. Check logs for details.", err=True)
         sys.exit(1)
 
 
@@ -84,7 +84,7 @@ def init_schema(ctx):
 
     except Exception as e:
         logger.error("schema_init_failed", error=str(e))
-        click.echo(f"✗ Schema initialization failed: {e}", err=True)
+        click.echo("✗ Schema initialization failed. Check logs for details.", err=True)
         sys.exit(1)
 
 
@@ -125,7 +125,7 @@ def drop_schema(ctx, confirm: bool):
 
     except Exception as e:
         logger.error("schema_drop_failed", error=str(e))
-        click.echo(f"✗ Schema drop failed: {e}", err=True)
+        click.echo("✗ Schema drop failed. Check logs for details.", err=True)
         sys.exit(1)
 
 
@@ -181,7 +181,7 @@ def discover(ctx, schemas: Optional[str], exclude: Optional[str]):
 
     except Exception as e:
         logger.error("discovery_failed", error=str(e))
-        click.echo(f"✗ Discovery failed: {e}", err=True)
+        click.echo("✗ Discovery failed. Check logs for details.", err=True)
         sys.exit(1)
 
 
@@ -245,7 +245,7 @@ def scan(
 
     except Exception as e:
         logger.error("scan_failed", error=str(e))
-        click.echo(f"\n✗ Scan failed: {e}", err=True)
+        click.echo("\n✗ Scan failed. Check logs for details.", err=True)
         sys.exit(1)
 
 
@@ -355,7 +355,7 @@ def report(ctx, run_id: Optional[int], limit: int):
 
     except Exception as e:
         logger.error("report_failed", error=str(e))
-        click.echo(f"✗ Report generation failed: {e}", err=True)
+        click.echo("✗ Report generation failed. Check logs for details.", err=True)
         sys.exit(1)
 
 
@@ -386,7 +386,7 @@ def test_connection(ctx):
         db.close()
 
     except Exception as e:
-        click.echo(f"✗ Connection failed: {e}", err=True)
+        click.echo("✗ Connection failed. Check logs for details.", err=True)
         sys.exit(1)
 
 
@@ -531,7 +531,7 @@ def jira_scan(ctx, hours: int, output: Optional[str], fmt: str):
 
     except Exception as e:
         logger.error("jira_scan_failed", error=str(e))
-        click.echo(f"\n✗ Jira scan failed: {e}", err=True)
+        click.echo("\n✗ Jira scan failed. Check logs for details.", err=True)
         sys.exit(1)
 
 
@@ -577,7 +577,7 @@ def jira_webhook(ctx, port: Optional[int]):
 
     except Exception as e:
         logger.error("jira_webhook_failed", error=str(e))
-        click.echo(f"\n✗ Webhook server failed: {e}", err=True)
+        click.echo("\n✗ Webhook server failed. Check logs for details.", err=True)
         sys.exit(1)
 
 

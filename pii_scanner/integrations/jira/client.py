@@ -48,7 +48,7 @@ class JiraClient:
         })
         self.session.auth = HTTPBasicAuth(email, api_token)
 
-        logger.info("jira_client_init", url=self.base_url, email=email)
+        logger.info("jira_client_init", url=self.base_url)
 
     def search_issues(self, jql: str, fields: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
